@@ -317,10 +317,12 @@ impl fmt::Display for Error {
                 "{} seconds is too large to be encoded to a 16 bit 512 second interval",
                 val
             ),
-            Self::IncompatibleHeight(lock, height) =>
-                write!(f, "tried to satisfy lock {} with height: {}", lock, height),
-            Self::IncompatibleTime(lock, time) =>
-                write!(f, "tried to satisfy lock {} with time: {}", lock, time),
+            Self::IncompatibleHeight(lock, height) => {
+                write!(f, "tried to satisfy lock {} with height: {}", lock, height)
+            }
+            Self::IncompatibleTime(lock, time) => {
+                write!(f, "tried to satisfy lock {} with time: {}", lock, time)
+            }
         }
     }
 }

@@ -498,18 +498,22 @@ impl fmt::Display for Error {
             Error::CannotDeriveFromHardenedKey =>
                 f.write_str("cannot derive hardened key from public key"),
             Error::Secp256k1(ref e) => write_err!(f, "secp256k1 error"; e),
-            Error::InvalidChildNumber(ref n) =>
-                write!(f, "child number {} is invalid (not within [0, 2^31 - 1])", n),
+            Error::InvalidChildNumber(ref n) => {
+                write!(f, "child number {} is invalid (not within [0, 2^31 - 1])", n)
+            }
             Error::InvalidChildNumberFormat => f.write_str("invalid child number format"),
             Error::InvalidDerivationPathFormat => f.write_str("invalid derivation path format"),
-            Error::UnknownVersion(ref bytes) =>
-                write!(f, "unknown version magic bytes: {:?}", bytes),
-            Error::WrongExtendedKeyLength(ref len) =>
-                write!(f, "encoded extended key data has wrong length {}", len),
+            Error::UnknownVersion(ref bytes) => {
+                write!(f, "unknown version magic bytes: {:?}", bytes)
+            }
+            Error::WrongExtendedKeyLength(ref len) => {
+                write!(f, "encoded extended key data has wrong length {}", len)
+            }
             Error::Base58(ref e) => write_err!(f, "base58 encoding error"; e),
             Error::Hex(ref e) => write_err!(f, "Hexadecimal decoding error"; e),
-            Error::InvalidPublicKeyHexLength(got) =>
-                write!(f, "PublicKey hex should be 66 or 130 digits long, got: {}", got),
+            Error::InvalidPublicKeyHexLength(got) => {
+                write!(f, "PublicKey hex should be 66 or 130 digits long, got: {}", got)
+            }
         }
     }
 }

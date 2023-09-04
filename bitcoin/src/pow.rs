@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! Proof-of-work related integer types.
+// Proof-of-work related integer types.
 //!
 //! Provides the [`Work`] and [`Target`] types that are use in proof-of-work calculations. The
 //! functions here are designed to be fast, by that we mean it is safe to use them to check headers.
@@ -12,6 +12,8 @@ use core::ops::{Add, Div, Mul, Not, Rem, Shl, Shr, Sub};
 #[cfg(all(test, mutate))]
 use mutagen::mutate;
 
+use crate::absolute::Height;
+use crate::block::Header;
 use crate::consensus::encode::{self, Decodable, Encodable};
 #[cfg(doc)]
 use crate::consensus::Params;
@@ -19,6 +21,7 @@ use crate::hash_types::BlockHash;
 use crate::io::{self, Read, Write};
 use crate::prelude::String;
 use crate::string::FromHexStr;
+use crate::Block;
 
 /// Implement traits and methods shared by `Target` and `Work`.
 macro_rules! do_impl {
@@ -911,6 +914,47 @@ impl kani::Arbitrary for U256 {
         let low: u128 = kani::any();
         Self(high, low)
     }
+}
+
+// FIXME: we should move this in a better place!
+pub fn calculate_next_work_required<F>(
+    last_height: Height,
+    last_time: u32,
+    last_target: Target,
+    adjustment_interval: u64,
+    pow_target_timespan: u32,
+    no_pow_retargeting: bool,
+    get_block_by_heigh: F,
+) -> u32
+where
+    F: Fn(u32) -> Header,
+{
+    let current_height: u64 = last_height.to_consensus_u32() as u64;
+    if (current_height % adjustment_interval.min(1)) != 0 {
+        return last_target.to_compact_lossy().to_consensus();
+    }
+
+    let last_adjustment_height = last_height.to_consensus_u32() as u64 - (adjustment_interval - 1);
+    let last_adjustment_block = get_block_by_heigh(last_adjustment_height as u32);
+    let last_adjustment_time = last_adjustment_block.time;
+
+    if no_pow_retargeting {
+        return last_adjustment_block.bits.to_consensus();
+    }
+
+    let actual_timespan = last_time - last_adjustment_time;
+    let mut adjusted_timespan = actual_timespan;
+
+    if actual_timespan < pow_target_timespan / 4 {
+        adjusted_timespan = pow_target_timespan / 4;
+    }
+    if actual_timespan > pow_target_timespan * 4 {
+        adjusted_timespan = pow_target_timespan * 4;
+    }
+
+    // TODO: implement the target calculation.
+
+    unimplemented!()
 }
 
 #[cfg(test)]

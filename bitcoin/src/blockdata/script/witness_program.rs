@@ -69,10 +69,12 @@ impl fmt::Display for Error {
         use self::Error::*;
 
         match *self {
-            InvalidLength(len) =>
-                write!(f, "witness program must be between 2 and 40 bytes: length={}", len),
-            InvalidSegwitV0Length(len) =>
-                write!(f, "a v0 witness program must be either 20 or 32 bytes: length={}", len),
+            InvalidLength(len) => {
+                write!(f, "witness program must be between 2 and 40 bytes: length={}", len)
+            }
+            InvalidSegwitV0Length(len) => {
+                write!(f, "a v0 witness program must be either 20 or 32 bytes: length={}", len)
+            }
         }
     }
 }

@@ -711,8 +711,9 @@ impl fmt::Display for Error {
             Secp256k1(ref e) => write_err!(f, "secp256k1"; e),
             InvalidKeyPrefix(ref b) => write!(f, "key prefix invalid: {}", b),
             Hex(ref e) => write_err!(f, "hex"; e),
-            InvalidHexLength(got) =>
-                write!(f, "pubkey hex should be 66 or 130 digits long, got: {}", got),
+            InvalidHexLength(got) => {
+                write!(f, "pubkey hex should be 66 or 130 digits long, got: {}", got)
+            }
         }
     }
 }
