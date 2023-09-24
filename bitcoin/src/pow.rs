@@ -12,8 +12,9 @@ use core::ops::{Add, Div, Mul, Not, Rem, Shl, Shr, Sub};
 #[cfg(all(test, mutate))]
 use mutagen::mutate;
 
+use crate::absolute::Height;
+use crate::block::Header;
 use crate::consensus::encode::{self, Decodable, Encodable};
-#[cfg(doc)]
 use crate::consensus::Params;
 use crate::hash_types::BlockHash;
 use crate::io::{self, Read, Write};
@@ -248,6 +249,20 @@ impl Target {
     /// The difficulty can only decrease or increase by a factor of 4 max on each difficulty
     /// adjustment period.
     pub fn max_difficulty_transition_threshold(&self) -> Self { Self(self.0 << 2) }
+
+    /// Returns the least number of bits needed to represent the number.
+    pub fn bits(&self) -> u32 { self.0.bits() }
+
+    /// Wrapping multiplication by `u64`.
+    ///
+    /// # Returns
+    ///
+    /// The multiplication result along with a boolean indicating whether an arithmetic overflow
+    /// occurred. If an overflow occurred then the wrapped value is returned.
+    pub fn mul_u64(self, rhs: u64) -> (Target, bool) {
+        let (value, overflow) = self.0.mul_u64(rhs);
+        (Self(value), overflow)
+    }
 }
 do_impl!(Target);
 
@@ -400,7 +415,6 @@ impl U256 {
     }
 
     /// Returns the least number of bits needed to represent the number.
-    #[cfg_attr(all(test, mutate), mutate)]
     fn bits(&self) -> u32 {
         if self.0 > 0 {
             256 - self.0.leading_zeros()
@@ -417,7 +431,6 @@ impl U256 {
     /// occurred. If an overflow occurred then the wrapped value is returned.
     // mutagen false pos mul_u64: replace `|` with `^` (XOR is same as OR when combined with <<)
     // mutagen false pos mul_u64: replace `|` with `^`
-    #[cfg_attr(all(test, mutate), mutate)]
     fn mul_u64(self, rhs: u64) -> (U256, bool) {
         let mut carry: u128 = 0;
         let mut split_le =
@@ -911,6 +924,88 @@ impl kani::Arbitrary for U256 {
         let low: u128 = kani::any();
         Self(high, low)
     }
+}
+
+/// Error from `get_block_header_by_height` callback.
+///
+/// Occurse when there is an error while get a new block header
+/// from an external source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GetBlockHeaderError {
+    /// Block Header not found
+    NotFound,
+    /// Generic error with custom message
+    Generic(String),
+}
+
+impl fmt::Display for GetBlockHeaderError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let msg = match self {
+            Self::Generic(error) => error,
+            Self::NotFound => "Block header not found",
+        };
+        write!(f, "{msg}")
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for GetBlockHeaderError {}
+
+/// Calculate the next Work required as the `GetNextWorkRequired` do
+/// in bitcoin core.
+///
+/// Return a error if the callback provide from the caller fails.
+#[cfg_attr(all(test, mutate), mutate)]
+pub fn calculate_next_work_required<F>(
+    consensus_params: Params,
+    current_height: Height,
+    current_time: u32,
+    get_block_header_by_height: F,
+) -> Result<u32, GetBlockHeaderError>
+where
+    F: Fn(u32) -> Result<Header, GetBlockHeaderError>,
+{
+    let adjustment_interval = consensus_params.difficulty_adjustment_interval();
+    let pow_target_timespan = consensus_params.pow_target_timespan;
+    let no_pow_retargeting = consensus_params.no_pow_retargeting;
+    let last_adjustment_height =
+        current_height.to_consensus_u32() as u64 - (adjustment_interval - 1);
+    let last_adjustment_block = get_block_header_by_height(last_adjustment_height as u32)?;
+    let last_adjustment_time = last_adjustment_block.time;
+    let current_height: u64 = current_height.to_consensus_u32() as u64;
+
+    // TODO(vincenzopalazzo): in the testnet case there is some rule
+    // where if there is no block for a long time the
+    // difficulty drops to 1, or something.
+    if ((current_height) % adjustment_interval.min(1)) != 0 {
+        return Ok(last_adjustment_block.target().to_compact_lossy().to_consensus());
+    }
+
+    if no_pow_retargeting {
+        return Ok(last_adjustment_block.bits.to_consensus());
+    }
+
+    let actual_timespan = (current_time - last_adjustment_time) as u64;
+    let adjusted_timespan = actual_timespan;
+
+    if actual_timespan < pow_target_timespan / 4 {
+        return Ok((pow_target_timespan / 4) as u32);
+    }
+    if actual_timespan > pow_target_timespan * 4 {
+        return Ok((pow_target_timespan / 4) as u32);
+    }
+
+    let target = last_adjustment_block.target();
+    let (mut target, overflow) = target.mul_u64(adjusted_timespan);
+    // FIXME(vincenzopalazzo): improve the API of the target.
+    target = Target(target.0 / U256::from(pow_target_timespan));
+
+    // Ensure a difficulty floor.
+    if overflow {
+        target = Target::MAX;
+    }
+
+    Ok(target.bits())
 }
 
 #[cfg(test)]
