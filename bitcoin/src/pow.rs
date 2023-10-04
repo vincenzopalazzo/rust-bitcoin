@@ -959,7 +959,8 @@ impl std::error::Error for GetBlockHeaderError {}
 pub fn calculate_next_work_required<F>(
     consensus_params: Params,
     current_height: Height,
-    current_time: u32,
+    current_header: Header,
+    new_block_timestamp: u32,
     get_block_header_by_height: F,
 ) -> Result<u32, GetBlockHeaderError>
 where
@@ -968,44 +969,71 @@ where
     let adjustment_interval = consensus_params.difficulty_adjustment_interval();
     let pow_target_timespan = consensus_params.pow_target_timespan;
     let no_pow_retargeting = consensus_params.no_pow_retargeting;
-    let last_adjustment_height =
-        current_height.to_consensus_u32() as u64 - (adjustment_interval - 1);
+    let allow_min_difficulty_blocks = consensus_params.allow_min_difficulty_blocks;
+    let pow_target_spacing = consensus_params.pow_target_spacing as u32;
+
+    let current_height = current_height.to_consensus_u32() as u64;
+    let current_time = current_header.time;
+
+    let last_adjustment_height = current_height - (adjustment_interval - 1);
     let last_adjustment_block = get_block_header_by_height(last_adjustment_height as u32)?;
     let last_adjustment_time = last_adjustment_block.time;
-    let current_height: u64 = current_height.to_consensus_u32() as u64;
 
-    // TODO(vincenzopalazzo): in the testnet case there is some rule
-    // where if there is no block for a long time the
-    // difficulty drops to 1, or something.
-    if ((current_height) % adjustment_interval.min(1)) != 0 {
-        return Ok(last_adjustment_block.target().to_compact_lossy().to_consensus());
+    if (current_height + 1) % adjustment_interval != 0 {
+        if allow_min_difficulty_blocks {
+            let pow_limit =
+                consensus_params.pow_limit.to_target().to_compact_lossy().to_consensus();
+            if new_block_timestamp > current_header.time + pow_target_spacing * 2 {
+                return Ok(pow_limit);
+            } else {
+                use hashes::Hash;
+                let mut header = current_header;
+                let mut height = current_height;
+                while header.prev_blockhash != BlockHash::all_zeros()
+                    && height % adjustment_interval != 0
+                    && header.bits.to_consensus() == pow_limit
+                {
+                    height -= 1;
+                    header = get_block_header_by_height(height as u32)?;
+                }
+                return Ok(header.bits.to_consensus());
+            }
+        }
+        return Ok(current_header.bits.to_consensus());
     }
 
     if no_pow_retargeting {
-        return Ok(last_adjustment_block.bits.to_consensus());
+        return Ok(current_header.bits.to_consensus());
     }
 
     let actual_timespan = (current_time - last_adjustment_time) as u64;
-    let adjusted_timespan = actual_timespan;
+    let mut adjusted_timespan = actual_timespan;
 
     if actual_timespan < pow_target_timespan / 4 {
-        return Ok((pow_target_timespan / 4) as u32);
+        adjusted_timespan = pow_target_timespan / 4;
     }
     if actual_timespan > pow_target_timespan * 4 {
-        return Ok((pow_target_timespan / 4) as u32);
+        adjusted_timespan = pow_target_timespan * 4;
     }
 
-    let target = last_adjustment_block.target();
-    let (mut target, overflow) = target.mul_u64(adjusted_timespan);
+    let mut target = current_header.target();
+
+    let (intermediate_value, _overflow) = target.mul_u64(adjusted_timespan);
     // FIXME(vincenzopalazzo): improve the API of the target.
-    target = Target(target.0 / U256::from(pow_target_timespan));
+    target = Target(intermediate_value.0 / U256::from(pow_target_timespan));
 
     // Ensure a difficulty floor.
-    if overflow {
+
+    // ##### TODO: BROKEN DUE TO Work MIN_WORK and U256 inverse small differences.
+    // let pow_limit_target = consensus_params.pow_limit.to_target();
+    // if target > pow_limit_target {
+    //     target = pow_limit_target;
+    // }
+    if target > Target::MAX {
         target = Target::MAX;
     }
 
-    Ok(target.bits())
+    Ok(target.to_compact_lossy().to_consensus())
 }
 
 #[cfg(test)]
@@ -1798,6 +1826,68 @@ mod tests {
         assert_eq!((U256::MAX >> (256 - 32)).to_f64(), 4294967295.0_f64);
         assert_eq!((U256::MAX >> (256 - 16)).to_f64(), 65535.0_f64);
         assert_eq!((U256::MAX >> (256 - 8)).to_f64(), 255.0_f64);
+    }
+
+    #[test]
+    fn test_calculate_next_work_required() {
+        use std::str::FromStr;
+        // TODO: Add more tests. Make the tests more readable. Test testnet rule.
+        let mainnet_params = Params::new(crate::Network::Bitcoin);
+
+        // Testing Difficulty 808416 -> 810432 on mainnet
+
+        // Expected result bits = 0x1704e90f (bits of 810432)
+        let expected = 0x1704e90f;
+        // We take the height and header of 810431 (the block before)
+        let height_810431 = Height::from_consensus(810431).unwrap();
+        // Only time and bits are used. Everything else is wrong.
+        let header_810431 = Header {
+            version: crate::block::Version::from_consensus(0x29322000),
+            prev_blockhash: BlockHash::from_str(
+                "000000000000000000027ecc78c2da1cc5c0b0496706baa7e4d7c80812c10bf3",
+            )
+            .unwrap(),
+            merkle_root: crate::TxMerkleNode::from_str(
+                "b920d5b5ebef4e9d106072944e0729cea8bf6defc583a7d87063041a316a757b",
+            )
+            .unwrap(),
+            time: 0x651bc919,
+            bits: CompactTarget(0x1704ed7f),
+            nonce: 0xc637a163,
+        };
+
+        // This closure should return the header for 808416 since 810431 - 2015 is 808416
+        let fetch_header_808416 = |_height| {
+            // Header for 808416
+            Ok(Header {
+                version: crate::block::Version::from_consensus(0x29322000),
+                prev_blockhash: BlockHash::from_str(
+                    "000000000000000000027ecc78c2da1cc5c0b0496706baa7e4d7c80812c10bf3",
+                )
+                .unwrap(),
+                merkle_root: crate::TxMerkleNode::from_str(
+                    "b920d5b5ebef4e9d106072944e0729cea8bf6defc583a7d87063041a316a757b",
+                )
+                .unwrap(),
+                time: 0x650964b5,
+                bits: CompactTarget(0x1704ed7f),
+                nonce: 0xc637a163,
+            })
+        };
+        // new_block_timestamp only matters on testnet when calculating
+        // the min_difficulty usage rule.
+        let new_block_timestamp_810432 = 0x651bc9b0;
+
+        let result = calculate_next_work_required(
+            mainnet_params,
+            height_810431,
+            header_810431,
+            new_block_timestamp_810432,
+            fetch_header_808416,
+        )
+        .unwrap();
+
+        assert_eq!(result, expected);
     }
 }
 
